@@ -49,28 +49,22 @@ function deleteAllTriggers(){
 function fetchSourceCalendars(sourceCalendarURLs){
   var result = []
   for (var url of sourceCalendarURLs){
-    url = url.replace("webcal://", "https://");
+    url = url.replace("webcal://", "https://");      
     
-    callWithBackoff(function() {
-      var urlResponse = UrlFetchApp.fetch(url, { 'validateHttpsCertificates' : false });
-      if (urlResponse.getResponseCode() == 200){
-        var urlContent = urlResponse.getContentText();
-        if(!urlContent.includes("BEGIN:VCALENDAR")){
-          Logger.log("[ERROR] Incorrect ics/ical URL: " + url);
-          return;
-        }
-        else{
-          result.push(urlContent);
-          Logger.log("Result: " + result.length);
-          return;
-        }     
+    try{
+      var urlResponse = UrlFetchApp.fetch(url).getContentText();
+      //------------------------ Error checking ------------------------
+      if(!urlResponse.includes("BEGIN:VCALENDAR")){
+        Logger.log("[ERROR] Incorrect ics/ical URL: " + url);
       }
-      else{ //Throw here to make callWithBackoff run again
-        throw "Error: Encountered " + urlReponse.getReponseCode() + " when accessing " + url; 
+      else{
+        result.push(urlResponse);
       }
-    }, 2);
+    }
+    catch(e){
+      Logger.log(e);
+    }
   }
-  
   return result;
 }
 
@@ -160,10 +154,11 @@ function parseResponses(responses){
  *
  * @param {ICAL.Component} event - The event to process
  * @param {string} calendarTz - The timezone of the target calendar
+ * @param {int} defaultEventDuration - default event duration in minutes
  */
-function processEvent(event, calendarTz){
+function processEvent(event, calendarTz, defaultEventDuration = 0){
   //------------------------ Create the event object ------------------------
-  var newEvent = createEvent(event, calendarTz);
+  var newEvent = createEvent(event, calendarTz, defaultEventDuration);
   if (newEvent == null)
     return;
   
@@ -188,8 +183,12 @@ function processEvent(event, calendarTz){
         newEvent = callWithBackoff(function(){
           return Calendar.Events.update(newEvent, targetCalendarId, calendarEvents[index].id);
         }, 2);
-        if (newEvent != null && emailSummary){
-          modifiedEvents.push([[newEvent.summary, newEvent.start.date||newEvent.start.dateTime], targetCalendarName]);
+        if (newEvent != null && emailWhenModified){
+          try{
+            GmailApp.sendEmail(email, "Event \"" + newEvent.summary + "\" modified", "Event was modified in calendar \"" + targetCalendarName + 
+                                                                                             "\" at " + newEvent.start.toString());
+          }
+          catch(error){}
         }
       }
     }
@@ -199,8 +198,12 @@ function processEvent(event, calendarTz){
         newEvent = callWithBackoff(function(){
           return Calendar.Events.insert(newEvent, targetCalendarId);
         }, 2);
-        if (newEvent != null && emailSummary){
-          addedEvents.push([[newEvent.summary, newEvent.start.date||newEvent.start.dateTime], targetCalendarName]);
+        if (newEvent != null && emailWhenAdded){
+          try{
+            GmailApp.sendEmail(email, "New Event \"" + newEvent.summary + "\" added", "New event added to calendar \"" + targetCalendarName + 
+                                                                                              "\" at " + newEvent.start.toString());
+          }
+          catch(error){}
         }
       }
     }
@@ -216,9 +219,10 @@ function processEvent(event, calendarTz){
  *
  * @param {ICAL.Component} event - The event to process
  * @param {string} calendarTz - The timezone of the target calendar
+ * @param {int} defaultEventDuration - event duration in minutes
  * @return {?Calendar.Event} The Calendar.Event that will be added to the target calendar
  */
-function createEvent(event, calendarTz){
+function createEvent(event, calendarTz, defaultEventDuration){
   event.removeProperty('dtstamp');
   var icalEvent = new ICAL.Event(event, {strictExceptions: true});
   if (onlyFutureEvents && checkSkipEvent(event, icalEvent)){
@@ -259,6 +263,14 @@ function createEvent(event, calendarTz){
       Logger.log("Using Timezone " + tzid + "!");
     }
 
+    if(defaultEventDuration > 0) {
+      Logger.log("Setting default event duration: " + defaultEventDuration);
+      icalEvent.endDate = icalEvent.startDate.clone();
+      icalEvent.endDate = icalEvent.endDate.adjust(0,0,defaultEventDuration,0);
+      Logger.log(icalEvent.startDate.toString());
+      Logger.log(icalEvent.endDate.toString());
+    }
+    
     newEvent = {
       start: {
         dateTime : icalEvent.startDate.toString(),
@@ -358,12 +370,8 @@ function createEvent(event, calendarTz){
       var overrides = [];
       for (var valarm of valarms){
         var trigger = valarm.getFirstPropertyValue('trigger').toString();
-        try{
-          var alarmTime = new ICAL.Time.fromString(trigger);
-          trigger = alarmTime.subtractDateTz(icalEvent.startDate).toString();
-        }catch(e){}
         if (overrides.length < 5){ //Google supports max 5 reminder-overrides
-          var timer = parseNotificationTime(trigger);
+          var timer = parseNotificationTime(trigger)/60;
           if (0 <= timer && timer <= 40320)
             overrides.push({'method' : 'popup', 'minutes' : timer});
         }
@@ -520,9 +528,6 @@ function processEventCleanup(){
         Logger.log("Deleting old event " + currentID);
         try{
           Calendar.Events.remove(targetCalendarId, calendarEvents[i].id);
-          if (emailSummary){
-            removedEvents.push([[calendarEvents[i].summary, calendarEvents[i].start.date||calendarEvents[i].start.dateTime], targetCalendarName]);
-          }
         }
         catch (err){
           Logger.log(err);
@@ -700,7 +705,7 @@ function parseAttendeeResp(veventString){
  * Will return 0 by default.
  *
  * @param {string} notificationString - The string to parse
- * @return {number} The notification time in minutes
+ * @return {number} The notification time in seconds
  */
 function parseNotificationTime(notificationString){
   //https://www.kanzaki.com/docs/ical/duration-t.html
@@ -712,76 +717,32 @@ function parseNotificationTime(notificationString){
   
   notificationString = notificationString.substr(1); //Remove "P" character
   
+  var secondMatch = RegExp("\\d+S", "g").exec(notificationString);
   var minuteMatch = RegExp("\\d+M", "g").exec(notificationString);
   var hourMatch = RegExp("\\d+H", "g").exec(notificationString);
   var dayMatch = RegExp("\\d+D", "g").exec(notificationString);
   var weekMatch = RegExp("\\d+W", "g").exec(notificationString);
   
   if (weekMatch != null){
-    reminderTime += parseInt(weekMatch[0].slice(0, -1)) & 7 * 24 * 60; //Remove the "W" off the end
+    reminderTime += parseInt(weekMatch[0].slice(0, -1)) & 7 * 24 * 60 * 60; //Remove the "W" off the end
     
-    return reminderTime; //Return the notification time in minutes
+    return reminderTime; //Return the notification time in seconds
   }
   else{
+    if (secondMatch != null)
+      reminderTime += parseInt(secondMatch[0].slice(0, -1)); //Remove the "S" off the end
+    
     if (minuteMatch != null)
-      reminderTime += parseInt(minuteMatch[0].slice(0, -1)); //Remove the "M" off the end
+      reminderTime += parseInt(minuteMatch[0].slice(0, -1)) * 60; //Remove the "M" off the end
     
     if (hourMatch != null)
-      reminderTime += parseInt(hourMatch[0].slice(0, -1)) * 60; //Remove the "H" off the end
+      reminderTime += parseInt(hourMatch[0].slice(0, -1)) * 60 * 60; //Remove the "H" off the end
     
     if (dayMatch != null)
-      reminderTime += parseInt(dayMatch[0].slice(0, -1)) * 24 * 60; //Remove the "D" off the end
+      reminderTime += parseInt(dayMatch[0].slice(0, -1)) * 24 * 60 * 60; //Remove the "D" off the end
     
-    return reminderTime; //Return the notification time in minutes
+    return reminderTime; //Return the notification time in seconds
   }
-}
-
-/**
-* Sends an email summary with added/modified/deleted events.
-*/            
-function sendSummary() {
-  var subject;
-  var body;
-  
-  var subject = `GAS-ICS-Sync Execution Summary: ${addedEvents.length} new, ${modifiedEvents.length} modified, ${removedEvents.length} deleted`;
-  addedEvents = condenseCalendarMap(addedEvents);
-  modifiedEvents = condenseCalendarMap(modifiedEvents);
-  removedEvents = condenseCalendarMap(removedEvents);
-  
-  body = "GAS-ICS-Sync made the following changes to your calendar:<br/>";
-  for (var tgtCal of addedEvents){
-    body += `<br/>${tgtCal[0]}: ${tgtCal[1].length} added events<br/><ul>`;
-    for (var addedEvent of tgtCal[1]){
-      body += "<li>" + addedEvent[0] + " at " + addedEvent[1] + "</li>";
-    }
-    body += "</ul>";
-  }
-  
-  for (var tgtCal of modifiedEvents){
-    body += `<br/>${tgtCal[0]}: ${tgtCal[1].length} modified events<br/><ul>`;
-    for (var addedEvent of tgtCal[1]){
-      body += "<li>" + addedEvent[0] + " at " + addedEvent[1] + "</li>";
-    }
-    body += "</ul>";
-  }
-  
-  for (var tgtCal of removedEvents){
-    body += `<br/>${tgtCal[0]}: ${tgtCal[1].length} removed events<br/><ul>`;
-    for (var addedEvent of tgtCal[1]){
-      body += "<li>" + addedEvent[0] + " at " + addedEvent[1] + "</li>";
-    }
-    body += "</ul>";
-  }
-  
-  body += "<br/><br/>Do you have any problems or suggestions? Contact us at <a href='https://github.com/derekantrican/GAS-ICS-Sync/'>github</a>.";
-  var message = {
-    to: email,
-    subject: subject,
-    htmlBody: body,
-    name: "GAS-ICS-Sync"
-  };
-  
-  MailApp.sendEmail(message);
 }
 
 /**
