@@ -18,13 +18,13 @@
 
 var sourceCalendars = [                // The ics/ical urls that you want to get events from along with their target calendars (list a new row for each mapping of ICS url to Google Calendar)
                                        // For instance: ["https://www.calendarlabs.com/ical-calendar/ics/76/US_Holidays.ics", "US Holidays"]
-  ["icsUrl1", "targetCalendar1"],
-  ["icsUrl2", "targetCalendar2"],
-  ["icsUrl3", "targetCalendar1"]
+  ["https://trello.com/calendar/5a1e66a02fa7487fb6b75cdc/5eb4562a14a1600184f4127f/1fe139a68804b672965df019f4da805f.ics", "Trello | CHIMES"]
+//  ["icsUrl2", "targetCalendar2"],
+//  ["icsUrl3", "targetCalendar1"]
   
 ];
 
-var howFrequent = 15;                  // What interval (minutes) to run this script on to check for new events
+var howFrequent = 1;                  // What interval (minutes) to run this script on to check for new events
 var onlyFutureEvents = false;          // If you turn this to "true", past events will not be synced (this will also removed past events from the target calendar if removeEventsFromCalendar is true)
 var addEventsToCalendar = true;        // If you turn this to "false", you can check the log (View > Logs) to make sure your events are being read correctly before turning this on
 var modifyExistingEvents = true;       // If you turn this to "false", any event in the feed that was modified after being added to the calendar will not update
@@ -35,10 +35,12 @@ var descriptionAsTitles = false;       // Whether to use the ics/ical descriptio
 var addCalToTitle = false;             // Whether to add the source calendar to title
 var addAttendees = false;              // Whether to add the attendee list. If true, duplicate events will be automatically added to the attendees' calendar.
 var defaultAllDayReminder = -1;        // Default reminder for all day events in minutes before the day of the event (-1 = no reminder, the value has to be between 0 and 40320)
+var defaultEventDuration = 30;         // OPTIONAL: Default event duration
                                        // See https://github.com/derekantrican/GAS-ICS-Sync/issues/75 for why this is neccessary.
 var addTasks = false;
 
-var emailSummary = false;              // Will email you when an event is added/modified/removed to your calendar
+var emailWhenAdded = false;            // Will email you when an event is added to your calendar
+var emailWhenModified = false;         // Will email you when an existing event is updated in your calendar
 var email = "";                        // OPTIONAL: If "emailWhenAdded" is set to true, you will need to provide your email
 
 /*
@@ -113,26 +115,16 @@ var calendarEventsIds = [];
 var icsEventsIds = [];
 var calendarEventsMD5s = [];
 var recurringEvents = [];
-var addedEvents = [];
-var modifiedEvents = [];
-var removedEvents = [];
 var startUpdateTime;
 
 function startSync(){
-  if (PropertiesService.getScriptProperties().getProperty('LastRun') > 0 && (new Date().getTime() - PropertiesService.getScriptProperties().getProperty('LastRun')) < 360000) {
-    Logger.log("Another iteration is currently running! Exiting...");
-    return;
-  }
-  
-  PropertiesService.getScriptProperties().setProperty('LastRun', new Date().getTime());
-  
   checkForUpdate();
   
   if (onlyFutureEvents)
     startUpdateTime = new ICAL.Time.fromJSDate(new Date());
   
   //Disable email notification if no mail adress is provided 
-  emailSummary = emailSummary && email != "";
+  emailWhenAdded = emailWhenAdded && email != "";
   
   sourceCalendars = condenseCalendarMap(sourceCalendars);
   for (var calendar of sourceCalendars){
@@ -181,7 +173,7 @@ function startSync(){
       var calendarTz = Calendar.Settings.get("timezone").value;
       
       vevents.forEach(function(e){
-        processEvent(e, calendarTz);
+        processEvent(e, calendarTz, defaultEventDuration);
       });
 
       Logger.log("Done processing events");
@@ -206,9 +198,5 @@ function startSync(){
     }
   }
 
-  if ((addedEvents.length + modifiedEvents.length + removedEvents.length) > 0 && emailSummary){
-    sendSummary();
-  }
   Logger.log("Sync finished!");
-  PropertiesService.getScriptProperties().setProperty('LastRun', 0);
 }
