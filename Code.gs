@@ -18,7 +18,7 @@
 
 var sourceCalendars = [                // The ics/ical urls that you want to get events from along with their target calendars (list a new row for each mapping of ICS url to Google Calendar)
                                        // For instance: ["https://www.calendarlabs.com/ical-calendar/ics/76/US_Holidays.ics", "US Holidays"]
-  ["https://trello.com/calendar/5a1e66a02fa7487fb6b75cdc/5eb4562a14a1600184f4127f/1fe139a68804b672965df019f4da805f.ics", "Trello | CHIMES"]
+//  ["icsUrl1", "targetCalendar1"],
 //  ["icsUrl2", "targetCalendar2"],
 //  ["icsUrl3", "targetCalendar1"]
   
